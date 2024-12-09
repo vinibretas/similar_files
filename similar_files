@@ -1,0 +1,309 @@
+#!/usr/bin/env python3.10
+import argparse
+import os
+import subprocess
+import time
+from pathlib import Path
+import difflib
+from rich.console import Console  # type: ignore
+from rich.panel import Panel  # type: ignore
+from rich.text import Text  # type: ignore
+from typing import List
+import rich.traceback  # type: ignore
+import re
+import aenum as enum  # type: ignore
+
+# Rich console for colorful output
+console = Console()
+rich.traceback.install()
+
+# Global variable for optional libraries
+levenshtein = None
+
+# Enum for algorithm choices
+
+
+class Algorithm(enum.StrEnum):
+    DIFFLIB = 'difflib'
+    LEVENSHTEIN = 'levenshtein'
+    TOKENIZED = 'tokenized'
+
+# Enum for verbosity levels
+
+
+class Verbosity(enum.Enum):
+    NORMAL = 1
+    HIGH = 2
+
+# Try importing optional libraries
+
+
+def try_import_levenshtein():
+    global levenshtein
+    try:
+        import Levenshtein as levenshtein  # type: ignore
+    except ImportError:
+        levenshtein = None
+
+# Function to parse command line arguments
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Find files with similar names.")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default=os.getcwd(),
+        help="Source path. Defaults to the directory where the command is run."
+    )
+    parser.add_argument(
+        "-s", "--suffix",
+        type=str,
+        help="File extension/suffix to filter files by. If not provided, all files are included.",
+        default="*"
+    )
+    parser.add_argument(
+        "-r", "-R",
+        action="store_true",
+        help="Search for files recursively in the directory."
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Increase verbose level to VERY HIGH."
+    )
+    parser.add_argument(
+        "-t", "--threshold",
+        type=float,
+        help="Similarity threshold for matching files (between 0 and 1). Default is 0.6.",
+        default=0.6
+    )
+    parser.add_argument(
+        "-n", "--matches-count",
+        type=int,
+        help="Maximum number of similar matches to find for each file. Default is 5.",
+        default=5
+    )
+    parser.add_argument(
+        "-a", "--algorithm",
+        type=str,
+        help=f"Algorithm to use for file matching. Options are {', '.join([alg.value for alg in Algorithm])}.",
+        default=Algorithm.DIFFLIB
+    )
+    return parser.parse_args()
+
+# Function to get a list of all files based on given parameters
+
+
+def get_files(source: str, suffix: str, recursive: bool) -> List[Path]:
+    source_path = Path(source)
+    pattern = f"**/*.{suffix}" if recursive else f"*.{suffix}"
+    return list(source_path.glob(pattern)) if suffix != "*" else list(source_path.rglob("*")) if recursive else list(source_path.glob("*"))
+
+# Function to clean and match algorithm name
+
+
+def get_algorithm_choice(user_input: str) -> Algorithm:
+    for option in Algorithm:
+        if user_input.lower() in option.value:
+            return option
+    return Algorithm.DIFFLIB
+
+# Function to find similar files using difflib
+
+
+def find_similar_files_difflib(files: List[Path], verbose: Verbosity, threshold: float, matches_count: int):
+    similar_files = []
+    for file in files:
+        if verbose == Verbosity.HIGH:
+            #  console.print(Panel(f"Analyzing file: [cyan]{file.name}[/]", style="yellow"))
+            #  console.print(f"[green]Path:[/] {file.resolve()}")
+            #  console.print(f"[green]Size:[/] {file.stat().st_size} bytes")
+            #  console.print(f"[green]Last Modified:[/] {time.ctime(file.stat().st_mtime)}")
+            pass
+        start_time = time.time()
+        #  file_candidates = difflib.get_close_matches(file.name, [f.name for f in files if f != file], n=matches_count, cutoff=threshold)
+        file_candidates = [(Path(candidate), score) for candidate, score in zip(
+            difflib.get_close_matches(file.name, [
+                                      f.name for f in files if f != file], n=matches_count, cutoff=threshold),
+            [1] * matches_count)]  # Ensure candidates are Paths, not strings
+
+        # Removed unused variable 'elapsed_time'
+        if verbose == Verbosity.HIGH:
+            #  console.print(f"[green]Time taken to find similar files:[/] {elapsed_time:.4f} seconds")
+            pass
+        if file_candidates:
+            similar_files.append((file, file_candidates))
+    return similar_files
+
+# Function to find similar files using Levenshtein distance
+
+
+def find_similar_files_levenshtein(files: List[Path], verbose: Verbosity, threshold: float, matches_count: int):
+    if levenshtein is None:
+        console.print(Panel(
+            "[red]Error: Levenshtein module is not installed. Please install it to use this algorithm.[/]", style="red"))
+        console.print(
+            "[yellow]Hint: You can install it with [cyan]pip install python-Levenshtein[/]")
+        console.print("[blue]Use --help to see usage information.")
+        exit(1)
+
+    similar_files = []
+    for file in files:
+        if verbose == Verbosity.HIGH:
+            #  console.print(Panel(f"Analyzing file: [cyan]{file.name}[/]", style="yellow"))
+            #  console.print(f"[green]Path:[/] {file.resolve()}")
+            #  console.print(f"[green]Size:[/] {file.stat().st_size} bytes")
+            #  console.print(f"[green]Last Modified:[/] {time.ctime(file.stat().st_mtime)}")
+            pass
+        start_time = time.time()
+        file_candidates = sorted(
+            [(Path(f), levenshtein.ratio(file.name, f.name))
+             for f in files if f != file],
+            key=lambda x: x[1], reverse=True
+        )
+        filtered_candidates = [
+            candidate[0] for candidate in file_candidates if candidate[1] >= threshold][:matches_count]
+
+        elapsed_time = time.time() - start_time
+        if verbose == Verbosity.HIGH:
+            #  console.print(f"[green]Time taken to find similar files:[/] {elapsed_time:.4f} seconds")
+            pass
+        if filtered_candidates:
+            similar_files.append((file, filtered_candidates))
+    return similar_files
+
+# Function to find similar files using tokenized matching
+
+
+def find_similar_files_tokenized(files: List[Path], verbose: Verbosity, threshold: float, matches_count: int):
+    similar_files = []
+    for file in files:
+        if verbose == Verbosity.HIGH:
+            #  console.print(Panel(f"Analyzing file: [cyan]{file.name}[/]", style="yellow"))
+            #  console.print(f"[green]Path:[/] {file.resolve()}")
+            #  console.print(f"[green]Size:[/] {file.stat().st_size} bytes")
+            #  console.print(f"[green]Last Modified:[/] {time.ctime(file.stat().st_mtime)}")
+            pass
+        start_time = time.time()
+        file_tokens = re.split(r'[\s\-\_\(\)]+', file.name)
+        filtered_files = []
+
+        for candidate in files:
+            if candidate == file:
+                continue
+            candidate_tokens = re.split(r'[\s\-\_\(\)]+', candidate.name)
+            common_tokens = set(file_tokens) & set(candidate_tokens)
+            if len(common_tokens) > 1 and len(common_tokens) / len(file_tokens) >= threshold:
+                filtered_files.append(Path(candidate))
+
+        filtered_candidates = filtered_files[:matches_count]
+        elapsed_time = time.time() - start_time
+        if verbose == Verbosity.HIGH:
+            #  console.print(f"[green]Time taken to find similar files:[/] {elapsed_time:.4f} seconds")
+            pass
+        if filtered_candidates:
+            similar_files.append((file, filtered_candidates))
+    return similar_files
+
+
+def is_part_video(candidate: Path) -> bool:
+    """
+    Verifies if the file matches the pattern:
+    "Part NUMBER", "Pt NUMBER", "Scene NUMBER", "Sc NUMBER".
+    The check is case-insensitive.
+
+    :param candidate: Path object representing the file.
+    :return: True if the file matches the pattern, False otherwise.
+    """
+    # Define the regex pattern
+    #  pattern = re.compile(r'\b(?:Part|Pt|Scene|Sc)\s+\d+\b', re.IGNORECASE)
+    pattern = re.compile(r'\b(?:Part|Pt|Scene|Sc|Scenes)[^\w\d]*\d+\b', re.IGNORECASE)
+
+
+    # Check if the filename matches the pattern
+    return bool(pattern.search(candidate.name))
+
+
+# Function to print the final report
+def print_report(similar_files: List[tuple], verbose: Verbosity, source: Path):
+    source = Path(source)
+    console.print(Panel("[green]Similar Files Report[/]", style="bold green"))
+    for original, candidates in similar_files:
+        original = Path(original)
+        relative_path = original.relative_to(source)
+        if is_part_video(original):
+            continue
+            console.print(f"PART VIDEO, SKIPPING: [bold underline cyan]{relative_path}[/]")
+
+        console.line()
+        console.print(f"[bold cyan]{relative_path}[/] is similar to:")
+        for candidate in candidates:
+            if type(candidate) is tuple:
+                candidate, score = candidate
+            candidate = Path(candidate).resolve()
+            ftype = "dir" if candidate.is_dir() else "file"
+            candidate_relative_path = candidate.relative_to(source)
+            console.print(
+                f"  - [magenta]{candidate_relative_path} ({ftype})[/]")
+        if verbose == Verbosity.HIGH:
+            console.print(
+                f"[yellow]Total similar candidates found for [cyan]{relative_path}[/]: [bold]{len(candidates)}[/]")
+
+# Main script
+
+
+def main():
+    args = parse_arguments()
+    algorithm = get_algorithm_choice(args.algorithm)
+    verbosity = Verbosity.HIGH if args.verbose else Verbosity.NORMAL
+
+    # Step 1: Try importing optional libraries
+    if algorithm == Algorithm.LEVENSHTEIN:
+        try_import_levenshtein()
+
+    # Step 2: Get all files based on parameters
+    start_time = time.time()
+    console.print(Panel(
+        f"[blue]Gathering files from source: [cyan]{args.source}[/] with suffix: [cyan]{args.suffix}[/]"))
+    source_path = Path(args.source)
+    files = get_files(args.source, args.suffix, args.r)
+    gather_elapsed_time = time.time() - start_time
+    if verbosity == Verbosity.HIGH:
+        console.print(Panel(
+            f"[green]Total files found: [cyan]{len(files)}[/] - Time taken: [bold]{gather_elapsed_time:.4f}[/] seconds"))
+        # Removed unreachable code block
+    else:
+        console.print(f"[yellow]Total files found: {len(files)}")
+
+    # Step 3: Use the selected algorithm to find similar files
+    if verbosity == Verbosity.HIGH:
+        console.print(Panel(
+            f"[blue]Finding similar files using [cyan]{algorithm}[/] algorithm...", style="yellow"))
+    start_time = time.time()
+    if algorithm == Algorithm.DIFFLIB:
+        similar_files = find_similar_files_difflib(
+            files, verbosity, args.threshold, args.matches_count)
+    elif algorithm == Algorithm.LEVENSHTEIN:
+        similar_files = find_similar_files_levenshtein(
+            files, verbosity, args.threshold, args.matches_count)
+    elif algorithm == Algorithm.TOKENIZED:
+        similar_files = find_similar_files_tokenized(
+            files, verbosity, args.threshold, args.matches_count)
+    find_elapsed_time = time.time() - start_time
+    if verbosity == Verbosity.HIGH:
+        console.print(Panel(
+            f"[green]Time taken to find similar files for all: [bold]{find_elapsed_time:.4f}[/] seconds", style="green"))
+
+    # Step 4: Print the report
+    if similar_files:
+        print_report(similar_files, verbosity, source_path)
+        console.print(Panel(
+            f"[blue]Found similar files using [cyan]{algorithm}[/] algorithm...", style="yellow"))
+    else:
+        console.print(Panel("[red]No similar files found.[/]", style="red"))
+
+
+if __name__ == "__main__":
+    main()
